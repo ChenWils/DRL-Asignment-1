@@ -312,7 +312,7 @@ class DQN(nn.Module):
     
 
 class ReplayBuffer:
-    def __init__(self, capacity=10000):
+    def __init__(self, capacity=20000):
         """
         Initialize Replay Buffer
         Args:
@@ -368,14 +368,14 @@ class ReplayBuffer:
 def train_agent():
     ### hyper param ###
     max_step = 200
-    episodes = 10000
+    episodes = 20000
     gamma = 0.99
     epsilon = 1.0
     epsilon_min = 0.01
     epsilon_decay = 0.9999
     batch_size = 128
     buffer_size = 100000
-    min_samples = 2000  # Increased minimum samples before training
+    min_samples = 1000  # Increased minimum samples before training
     lr = 0.0005  # Reduced learning rate for more stability
     lr_step_size = 2000  # Increased step size
     lr_gamma = 0.5  # Less aggressive learning rate decay
