@@ -139,15 +139,22 @@ def get_action(obs, eps=0):
     # You can submit this random agent to evaluate the performance of a purely random strategy.
     # return random.choice([0, 1, 2, 3, 4, 5])
     
-
+class reward_state():
+    def __init__(self):
+        self.passenger_picked = False
+        self.position_history = []
+        self.action_history = []
+        self.position_history_length = 5
     
-def reward_shaping(obs, next_obs, action, reward, position_history_length=5):
+def extra_reward(obs, next_obs, action, reward,reward_asisitant):
     """
-    Shape rewards for:
-    1. Finding and picking up passenger
-    2. Delivering passenger
-    3. General movement rewards/punishments
-    4. Anti-oscillation penalties
+    Shape rewards to complement original rewards:
+    Original rewards:
+    1. Task completion: +50
+    2. Each step: -0.1
+    3. Wrong pickup/dropoff: -10
+    4. Hit wall: -5
+    5. No fuel: -10
     """
     # Extract current and next state information
     taxi_row, taxi_col, station0_row, station0_col, station1_row, station1_col, station2_row, station2_col, station3_row, station3_col, \
@@ -157,25 +164,21 @@ def reward_shaping(obs, next_obs, action, reward, position_history_length=5):
     _, _, _, _, next_passenger_look, next_destination_look = next_obs
     
     # Initialize state tracking if not already done
-    if not hasattr(reward_shaping, "pre_state"):
-        reward_shaping.passenger_picked = False
-        reward_shaping.position_history = []
-        reward_shaping.action_history = []  # Track action history for oscillation detection
     
-    shaped_reward = reward
+    shaped_reward = reward  # Start with original reward
     stations = [(station0_row, station0_col), (station1_row, station1_col), 
                 (station2_row, station2_col), (station3_row, station3_col)]
     
-    # 1. FINDING AND PICKING UP PASSENGER
-    if not reward_shaping.passenger_picked:
-        # Reward for discovering passenger            
+    # 1. PROGRESS REWARDS
+    if not reward_asisitant.passenger_picked:
+        # Reward for discovering passenger (helps with exploration)           
         if passenger_look == 0 and next_passenger_look == 1:
             shaped_reward += 5.0
         
-        # Reward for successful pickup
-        if passenger_look == 1 and action == 4: # and reward > 0:
-            shaped_reward += 15.0
-            reward_shaping.passenger_picked = True
+        # Additional reward for successful pickup (original already has -10 for wrong pickup)
+        if passenger_look == 1 and action == 4 :  # Not a wall hit or wrong pickup
+            shaped_reward += 10.0
+            reward_asisitant.passenger_picked = True
         
         # Penalty for wrong pickup
         if passenger_look == 0 and action == 4:
@@ -187,10 +190,10 @@ def reward_shaping(obs, next_obs, action, reward, position_history_length=5):
         if destination_look == 0 and next_destination_look == 1:
             shaped_reward += 5.0
         
-        # Reward for successful dropoff
-        if destination_look == 1 and action == 5 and reward > 0:
+        # Additional reward for successful dropoff
+        if destination_look == 1 and action == 5:  # Successful completion
             shaped_reward += 10.0
-            reward_shaping.passenger_picked = False
+            reward_asisitant.passenger_picked = False
         
         # Penalty for wrong dropoff
         if destination_look == 0 and action == 5:
@@ -200,84 +203,85 @@ def reward_shaping(obs, next_obs, action, reward, position_history_length=5):
     # 3. GENERAL MOVEMENT REWARDS/PUNISHMENTS
     
     # Penalty for not moving (hitting walls)
-    if action < 4 and taxi_row == next_taxi_row and taxi_col == next_taxi_col:
+    if  taxi_row == next_taxi_row and taxi_col == next_taxi_col:
         shaped_reward -= 1.0  # Reduced penalty
     
     # Update position history and penalize revisits
-    reward_shaping.position_history.append((taxi_row, taxi_col))
-    reward_shaping.action_history.append(action)  # Track actions for oscillation detection
+    reward_asisitant.position_history.append((taxi_row, taxi_col))
+    reward_asisitant.action_history.append(action)
     
-    if len(reward_shaping.position_history) > position_history_length:
-        reward_shaping.position_history.pop(0)
+    if len(reward_asisitant.position_history) > reward_asisitant.position_history_length:
+        reward_asisitant.position_history.pop(0)
+    if len(reward_asisitant.action_history) > reward_asisitant.position_history_length:
+        reward_asisitant.action_history.pop(0)
     
-    if len(reward_shaping.action_history) > position_history_length:
-        reward_shaping.action_history.pop(0)
-    
-    # 4. ANTI-OSCILLATION PENALTIES
-    # Detect patterns like [0,2,0,2] (up-down-up-down) or [1,3,1,3] (right-left-right-left)
-    if len(reward_shaping.action_history) >= 4:
-        last_four = reward_shaping.action_history[-4:]
+    # 3. ANTI-OSCILLATION PENALTIES (reduced magnitude since we have step penalty)
+    # print(len(reward_asisitant.action_history))
+    if len(reward_asisitant.action_history) >= 4:
+        last_four = reward_asisitant.action_history[-4:]
+        # print("Last four actions:", last_four)
         
-        # Check for up-down oscillation (actions 0 and 2)
+        # Check for up-down oscillation
         if (last_four[0] == 0 and last_four[1] == 2 and last_four[2] == 0 and last_four[3] == 2) or \
            (last_four[0] == 2 and last_four[1] == 0 and last_four[2] == 2 and last_four[3] == 0):
-            shaped_reward -= 7.0  # Strong penalty for up-down oscillation
+            shaped_reward -= 3.0
+            # print("-10")
         
-        # Check for left-right oscillation (actions 1 and 3)
+        # Check for left-right oscillation
         if (last_four[0] == 1 and last_four[1] == 3 and last_four[2] == 1 and last_four[3] == 3) or \
            (last_four[0] == 3 and last_four[1] == 1 and last_four[2] == 3 and last_four[3] == 1):
-            shaped_reward -= 8.0  # Strong penalty for left-right oscillation
+            shaped_reward -= 3.0
+            # print("-10")
     
-    # Also check for shorter oscillation patterns
-    if len(reward_shaping.action_history) >= 2:
-        last_two = reward_shaping.action_history[-2:]
+    # Penalize immediate direction reversals
+    if len(reward_asisitant.action_history) >= 2:
+        last_two = reward_asisitant.action_history[-2:]
         
         # Opposite direction pairs: (0,2), (2,0), (1,3), (3,1)
         opposite_pairs = [(0,2), (2,0), (1,3), (3,1)]
         
         if (last_two[0], last_two[1]) in opposite_pairs:
             shaped_reward -= 3.0  # Smaller penalty for immediate direction reversal
+            # print("-3")
     
-    # Position-based oscillation detection
-    if len(reward_shaping.position_history) >= 6:
-        # Check for position patterns like A-B-A-B-A-B (oscillating between two positions)
-        last_six = reward_shaping.position_history[-6:]
-        
-        # Check if we're alternating between two positions
+    # 4. POSITION-BASED PENALTIES (reduced since we have step penalty)
+    if len(reward_asisitant.position_history) >= 6:
+        last_six = reward_asisitant.position_history[-6:]
+        # Penalize two-position oscillation
         if (last_six[0] == last_six[2] == last_six[4]) and (last_six[1] == last_six[3] == last_six[5]):
-            shaped_reward -= 2.0  # Very strong penalty for position oscillation
+            shaped_reward -= 1.5
         
-        # Check for A-B-C-A-B-C pattern (three-position cycle)
+        # Penalize three-position cycles
         if (last_six[0] == last_six[3]) and (last_six[1] == last_six[4]) and (last_six[2] == last_six[5]):
-            shaped_reward -= 1.5  # Strong penalty for three-position cycle
+            shaped_reward -= 1.0
     
-    # Check for position loops (returning to same position after a sequence of moves)
-    if len(reward_shaping.position_history) >= 4:
-        last_four = reward_shaping.position_history[-4:]
-        if last_four[0] == last_four[-1] and len(set(last_four)) < 4:
-            shaped_reward -= 1.0  # Penalty for short loops
-    
-    # Penalize based on number of revisits in history - with reduced penalty
-    position_count = reward_shaping.position_history.count((taxi_row, taxi_col))
-    if position_count > 2:  # Only penalize after more than 2 visits
-        shaped_reward -= 1.0 * (position_count - 2)  # Reduced penalty
-    
-    # Small reward for getting closer to nearest station - with increased reward
+    # 5. PROGRESS TOWARD GOAL
     min_d = float('inf')
-    for station in stations:
+    target_stations = []
+    
+    # Determine relevant stations based on state
+    if not reward_asisitant.passenger_picked and passenger_look == 1:
+        target_stations = [(taxi_row, taxi_col)]  # Target current position for pickup
+    elif reward_asisitant.passenger_picked and destination_look == 1:
+        target_stations = [(taxi_row, taxi_col)]  # Target current position for dropoff
+    else:
+        target_stations = stations  # Search all stations
+    
+    # Calculate distance to nearest target
+    for station in target_stations:
         distance = abs(taxi_row - station[0]) + abs(taxi_col - station[1])
         min_d = min(min_d, distance)
     
-    if len(reward_shaping.position_history) > 1:
-        prev_position = reward_shaping.position_history[-2]
+    # Reward progress toward target
+    if len(reward_asisitant.position_history) > 1:
+        prev_position = reward_asisitant.position_history[-2]
         prev_min_d = float('inf')
-        for station in stations:
-            distance = abs(prev_position[0] - station[0]) + \
-                      abs(prev_position[1] - station[1])
+        for station in target_stations:
+            distance = abs(prev_position[0] - station[0]) + abs(prev_position[1] - station[1])
             prev_min_d = min(prev_min_d, distance)
         
         if min_d < prev_min_d:
-            shaped_reward += 2.0  # Increased reward for progress
+            shaped_reward += 3  # Small reward for getting closer to goal
     
     return shaped_reward
 
@@ -380,11 +384,11 @@ class ReplayBuffer:
         self.sequence_length = sequence_length
         self.episode_buffer = []  # Temporary buffer for current episode
         
-    def push(self, state, action, reward, next_state, done):
+    def push(self, state, action, reward, next_state, done,stop):
         """Store transition in the episode buffer"""
         self.episode_buffer.append((state, action, reward, next_state, done))
         
-        if done:
+        if stop:
             # Store the entire episode
             if len(self.episode_buffer) >= self.sequence_length:
                 if len(self.buffer) < self.capacity:
@@ -401,7 +405,7 @@ class ReplayBuffer:
         Returns:
             Tuple of (states, actions, rewards, next_states, dones) where each is a sequence
         """
-        episodes = random.sample(self.buffer, batch_size)
+        episodes = random.sample(self.buffer[:-500], batch_size)
         
         # For each episode, randomly select a sequence of specified length
         batch_states = []
@@ -446,13 +450,13 @@ class ReplayBuffer:
     
 def train_agent():
     ### hyper param ###
-    max_step = 200
-    episodes = 10000
+    max_step = 320
+    episodes = 20000
     gamma = 0.99
     epsilon = 1.0
     epsilon_min = 0.05  # Increased minimum epsilon
     epsilon_decay = 0.9999  # Faster epsilon decay
-    batch_size = 32  # Smaller batch size for sequences
+    batch_size = 128  # Smaller batch size for sequences
     sequence_length = 8  # Length of sequences to train on
     buffer_size = 10000  # Reduced buffer size since we store episodes
     min_samples = 1000  # Minimum episodes before training
@@ -498,6 +502,7 @@ def train_agent():
         episode_reward = 0
         episode_step = 0
         done = False
+        reward_asistant = reward_state()
         
         # Reset hidden states at the start of each episode
         policy_net.hidden = policy_net.init_hidden()
@@ -517,16 +522,18 @@ def train_agent():
             # Take action
             next_obs, reward, done, _ = env.step(action)
             next_state_tensor = state_feature(next_obs)
-            shaped_reward = reward_shaping(obs, next_obs, action, reward)
+            shaped_reward = extra_reward(obs, next_obs, action, reward,reward_asistant)
             episode_reward += shaped_reward
             
+            stop = done or episode_step > max_step
             # Store transition in replay buffer
             replay_buffer.push(
                 state_tensor,
                 action,
                 shaped_reward,
                 next_state_tensor,
-                done
+                done,
+                stop
             )
             
             # Train if enough samples
